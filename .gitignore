@@ -1,0 +1,53 @@
+# Dependencies and generated builds
+node_modules/
+/dist/
+/coverage/
+/.cache/
+/.parcel-cache/
+*.tsbuildinfo
+
+# Local tools, extracted PDF content, and temporary previews
+/tmp/
+/temp/
+/.venv/
+/venv/
+__pycache__/
+*.py[cod]
+/test-results/
+/playwright-report/
+/blob-report/
+
+# Credentials and machine-specific environment settings
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+/.vercel/
+/.netlify/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+/.idea/
+/.vscode/settings.json
+/.vscode/launch.json
+*.code-workspace
+
+# Local coursework references; not website source or public assets
+/COM435_Part1_Needs_and_Risk_Assessment.pdf
+/COM435_Part2_MVP_and_Sprint_Plan.pdf
+
+# Keep source, lockfiles, deployment configuration, and docs/screenshots tracked.
