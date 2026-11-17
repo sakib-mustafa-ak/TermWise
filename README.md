@@ -4,7 +4,7 @@
 
 Termwise helps students plan between loan instalments, grants, and irregular wages. It brings confirmed money, essential bills, and everyday spending into one view so students can see what is available until their next payment.
 
-This repository contains the core MVP from the COM435 product plan: a responsive application built with vanilla JavaScript, HTML, and CSS. It runs in the browser, uses local storage, and has no runtime package dependencies.
+This repository implements the budgeting and sharing features from the COM435 product plan. The responsive JavaScript application supports browser-local budgeting and optional Supabase-backed accounts, cloud sync, household collaboration, and recipient-restricted support summaries.
 
 ![Termwise desktop overview with weekly estimate, protected essentials, budgets, and upcoming payments](docs/screenshots/overview-desktop.png)
 
@@ -16,8 +16,11 @@ This repository contains the core MVP from the COM435 product plan: a responsive
 | Term runway | View dated bills and expected income; set an opening balance and buffer; calculate a weekly estimate; identify incomplete or outdated inputs. |
 | Income smoother | Reserve essential costs and divide the remainder into weekly allocations with exact penny reconciliation. |
 | Purchase rehearsal | Compare spending before and after a proposed purchase and review essential-bill coverage without changing saved transactions. |
-| Household ledger | Record shared bills; choose equal, percentage, or custom splits; track settlement locally. |
-| CSV preview | Choose a file, map its columns, and review ready, duplicate, and invalid rows without adding records. |
+| Household ledger | Record local bills or collaborate online with invited household members; reconcile equal, percentage, or custom splits and track each member’s settlement. |
+| CSV import | Map columns, review duplicates and errors, then explicitly confirm only the valid new expenses. Re-imports do not duplicate saved records. |
+| Reset Week | Preview recovery across future weeks and selected flexible categories; protect bills and past records; undo the latest reset. |
+| Accounts and sync | Email/password accounts, recovery, separate private budgets, automatic cloud saving, and conflict detection. Requires Supabase setup. |
+| Support snapshots | Select categories, dates, recipient, and access duration; preview totals, confirm consent, and revoke access. Requires Supabase setup. |
 
 ## Screenshots
 
@@ -43,11 +46,12 @@ The narrow-screen layout stacks the dashboard and provides bottom navigation.
 
 ## Getting started
 
-Install **Node.js 20 or later**. There are no application dependencies to install.
+Install **Node.js 22 or later** and the project dependencies.
 
 ```sh
 git clone https://github.com/sakib-mustafa-ak/TermWise.git
 cd TermWise
+npm ci
 npm run dev
 ```
 
@@ -59,12 +63,13 @@ To enter your own figures, open **Settings & data > Start my own plan**, then ad
 | --- | --- |
 | `npm run dev` | Start the local server at `http://localhost:5173`. |
 | `npm start` | Start the same local server. |
-| `npm test` | Run the financial calculation and CSV validation tests. |
+| `npm test` | Run financial, CSV, reset, configuration, and database permission tests. |
+| `npm run test:browser` | Run isolated UI/database integration checks. Install Chromium with `npx playwright install chromium` first. |
 | `npm run build` | Copy the public application files into `dist/`. |
 
 ## Deployment
 
-Deploy Termwise as a **static site**. Production does not need a Node.js server, a database, API keys, or environment variables.
+Deploy Termwise as a **static site**. It does not need a Node.js web server in production. Local budgeting works without backend settings. To enable accounts, cloud sync, and online sharing, follow the [Supabase setup guide](./docs/SUPABASE_SETUP.md), run its schema, and supply the two public connection variables before building.
 
 | Setting | Value |
 | --- | --- |
@@ -86,15 +91,19 @@ Import the repository into Netlify and select `main` as the production branch. T
 
 See [Netlify's configuration reference](https://docs.netlify.com/build/configure-builds/file-based-configuration/) for supported build settings.
 
-Navigation uses URL fragments such as `/#plan`, so no server-side route rewrites are required. Assets use root-relative URLs; deploy at the domain root rather than a repository subpath. Only the five public application files are copied to the production build. Documentation, screenshots, coursework PDFs, and development tools are excluded.
+Navigation uses URL fragments such as `/#plan`, so no server-side route rewrites are required. Assets use root-relative URLs; deploy at the domain root rather than a repository subpath. The production build contains public application modules, a bundled Supabase browser client, and generated public configuration. Documentation, tests, coursework PDFs, database SQL, and development tools are excluded. Never use a Supabase secret or service-role key in the public connection settings.
 
 ## Data and privacy
 
-Records are saved in `localStorage` for the current browser and origin. Saved changes survive page refreshes, but another browser, device, or deployment domain has separate data. Clearing site data removes local records. Export transactions before clearing data or changing devices.
+Guest records are saved in `localStorage` for the current browser and origin. Signing in opens a separate private account plan and enables automatic cloud sync when Supabase is configured. A guest plan is copied to the account only through an explicit confirmation. Normal sign-out removes the synced account cache; confirmed sign-out with unsynced changes retains a recovery copy for that account.
 
-The MVP has no authentication, cloud synchronisation, encryption layer, or backup service. Household bills form a local ledger: the application does not invite housemates, send notifications, or expose records to other accounts. Shared bills and personal transactions have separate interface views; this is not a multi-user access-control system.
+Cloud saves use revision checks. A stale device reports a conflict rather than replacing newer data. Sync failures preserve local changes. Export transactions before replacing a local copy or clearing browser data.
 
-Fonts are requested from Google Fonts, with local fallback fonts. The application does not send budget records to a backend.
+Online households expose shared bills only to authenticated members. A member can settle only their own share. Support summaries contain selected category totals and dates, never descriptions or notes. Their named recipient must sign in; database policies enforce expiry and revocation. Previously viewed or copied information cannot be erased by revocation.
+
+Without Supabase settings, the app retains local budgeting, local shared bills, CSV import, and Reset Week. Account and online-sharing screens explain the required setup rather than simulate a connection. Authentication email delivery and hosted backend access require live deployment verification.
+
+Fonts are requested from Google Fonts, with local fallback fonts. In cloud mode, account budget data is sent to the configured Supabase project. See the [backend guide](./docs/SUPABASE_SETUP.md) for storage, access, and recovery behavior.
 
 ## Calculation rules
 
@@ -119,7 +128,7 @@ Supported categories: Groceries, Transport, Eating out, Shopping, Entertainment,
 
 Files are limited to 2 MB and 5,000 rows. Quoted fields and embedded commas are supported. If present, `currency` must be `GBP` and `type` must be `expense`. Duplicate detection compares date, description, amount, and category against existing records and earlier rows. Exports retain transaction types; income must be entered manually rather than previewed as an expense.
 
-CSV preview does not commit rows in this release.
+Previewing never commits records. **Import N transactions** opens a confirmation showing the count, total cost, and excluded rows. Confirmation revalidates against the latest in-memory records and saves the batch once; repeat imports become duplicates.
 
 ## Project structure
 
@@ -127,7 +136,10 @@ CSV preview does not commit rows in this release.
 | --- | --- |
 | [index.html](./index.html) | Application shell, navigation, and metadata. |
 | [app.js](./app.js) | Screens, forms, interactions, and browser persistence. |
-| [core.js](./core.js) | Calculations, validation, CSV parsing, and bill splits. |
+| [core.js](./core.js) | Calculations, validation, CSV import, bill splits, and recovery plans. |
+| [cloud.js](./cloud.js) | Supabase authentication, versioned sync, and shared-data requests. |
+| [supabase/schema.sql](./supabase/schema.sql) | Database tables, policies, and checked functions. |
+| [docs/SUPABASE_SETUP.md](./docs/SUPABASE_SETUP.md) | Hosted-backend activation and verification. |
 | [styles.css](./styles.css) | Responsive desktop and mobile presentation. |
 | [server.mjs](./server.mjs) | Local server restricted to public application files. |
 | [scripts/build.mjs](./scripts/build.mjs) | Static production build. |
@@ -136,8 +148,10 @@ CSV preview does not commit rows in this release.
 
 ## Verification and release scope
 
-Automated tests cover valid and invalid transactions, pending-income exclusion, incomplete forecasts, essential shortfalls, penny rounding, split reconciliation, quoted CSV fields, duplicates, and malformed rows. Browser checks also cover purchase preview/discard, CSV preview without saved-data changes, and mobile navigation without horizontal page overflow.
+The implementation covers the core budgeting routes and the later import, recovery, and support-sharing features. Hosted functions require the Supabase schema and public settings; they are not active merely because the static website is deployed.
 
-This release implements the core scope from **Sprints 1-3**. Confirmed CSV import and Reset Week belong to Sprint 4. Consent-based support snapshots belong to Sprint 5 and require backend recipient access, expiry, and revocation before release.
+Run `npm test` for calculation and database tests, then `npm run test:browser` for UI integration checks. The database checks execute the actual schema in PGlite with separate authenticated roles. Browser checks use a simulated Supabase transport backed by that database. They cover CSV confirmation, reset/undo, account isolation, household invitations and settlement, snapshot consent and revocation, and conflicting saves.
+
+Live Supabase email confirmation, password recovery, and deployed connectivity must still be checked using the [two-account deployment checklist](./docs/SUPABASE_SETUP.md#5-verify-two-real-accounts).
 
 The original COM435 planning PDFs are local reference material and are intentionally excluded from version control and deployment.

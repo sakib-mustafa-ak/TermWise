@@ -22,6 +22,7 @@ export function forecast(state, at = today()) {
   return {days,weeks:Math.max(1,Math.ceil(days/7)),essentials,confirmed,flexible,complete,weekly:complete?Math.floor(Math.max(0,flexible)*7/days):null,shortfall:Math.max(0,-flexible)};
 }
 export function weekStart(at=today()) {const d=new Date(at+'T12:00:00');d.setDate(d.getDate()-((d.getDay()+6)%7));return d.toLocaleDateString('en-CA');}
+export function effectiveBudgets(state,at=today()){return {...state.budgets,...state.futureBudgets?.[weekStart(at)]};}
 export function weekSpent(state,category,at=today()) {const start=weekStart(at);return state.transactions.filter(t=>t.type==='expense'&&t.date>=start&&t.date<=at&&(!category||t.category===category)).reduce((s,t)=>s+t.amount,0);}
 export function validateTransaction(row) {
   if (!Number.isSafeInteger(row.amount)||row.amount<=0) throw new Error('Amount: enter an amount greater than £0.00.');
@@ -41,15 +42,22 @@ export function parseCSV(text) {
   return {headers,rows};
 }
 export function previewCSV(parsed,mapping,existing=[]) {
+  const required=['date','description','amount','category'];
+  if(required.some(k=>!Number.isInteger(mapping?.[k])||mapping[k]<0||mapping[k]>=parsed.headers.length)||new Set(required.map(k=>mapping[k])).size!==4)throw new Error('Map date, description, amount and category to four different columns.');
   const seen=new Set(existing.map(t=>[t.date,t.description.trim().toLowerCase(),t.amount,t.category.toLowerCase()].join('|')));
   return parsed.rows.map((row,index)=>{
     let t={date:row[mapping.date]?.trim(),description:row[mapping.description]?.trim()||'',category:row[mapping.category]?.trim(),type:'expense'};
-    try{t.amount=pennies(row[mapping.amount]?.trim());const c=categories.find(c=>c.toLowerCase()===t.category?.toLowerCase());if(c)t.category=c;validateTransaction(t);
+    try{if(row.length!==parsed.headers.length)throw new Error('Row has a different number of fields from the header.');t.amount=pennies(row[mapping.amount]?.trim());const c=categories.find(c=>c.toLowerCase()===t.category?.toLowerCase());if(c)t.category=c;validateTransaction(t);
       const ci=parsed.headers.indexOf('currency');if(ci>=0&&row[ci]?.trim().toUpperCase()!=='GBP')throw new Error('Unsupported currency: use GBP.');
       const ti=parsed.headers.indexOf('type');if(ti>=0&&row[ti]?.trim().toLowerCase()!=='expense')throw new Error('This preview supports expense rows only. Record income manually.');
       const key=[t.date,t.description.toLowerCase(),t.amount,t.category.toLowerCase()].join('|');if(seen.has(key))return {...t,index,status:'Duplicate',error:'Matches an existing or earlier row.'};seen.add(key);return {...t,index,status:'Ready'};
     }catch(e){return {...t,index,status:'Error',error:e.message};}
   });
+}
+export function prepareCSVImport(parsed,mapping,existing,makeId=()=>crypto.randomUUID()) {
+  const preview=previewCSV(parsed,mapping,existing);
+  const transactions=preview.filter(row=>row.status==='Ready').map(({date,description,amount,category,type})=>({id:makeId(),date,description,amount,category,type}));
+  return {transactions,duplicates:preview.filter(row=>row.status==='Duplicate').length,errors:preview.filter(row=>row.status==='Error').length};
 }
 export function splitBill(amount,people,method,values=[]) {
   if(!people.length)throw new Error('Select at least one participant.');
@@ -59,4 +67,38 @@ export function splitBill(amount,people,method,values=[]) {
     const shares=units.map(v=>Math.floor(amount*v/10000));let rest=amount-shares.reduce((a,b)=>a+b,0);for(let i=0;rest>0;i++,rest--)shares[i%shares.length]++;return shares;
   }
   const shares=values.map(pennies);if(shares.reduce((a,b)=>a+b,0)!==amount)throw new Error('Custom shares must add up to the bill total.');return shares;
+}
+export function weeklyDate(start,index) {
+  const d=new Date(start+'T12:00:00');d.setDate(d.getDate()+index*7);return d.toLocaleDateString('en-CA');
+}
+function cappedShares(total,capacities) {
+  const sum=capacities.reduce((a,b)=>a+b,0);
+  if(total>sum)throw new Error('The selected flexible categories cannot cover this adjustment. Choose more categories or a smaller amount.');
+  if(!sum)return capacities.map(()=>0);
+  const shares=capacities.map(n=>Number(BigInt(total)*BigInt(n)/BigInt(sum)));
+  let extra=total-shares.reduce((a,b)=>a+b,0);
+  for(let i=shares.length-1;extra>0;i=(i+shares.length-1)%shares.length){if(shares[i]<capacities[i]){shares[i]++;extra--;}}
+  return shares;
+}
+export function planReset(state,{amount,selected,at=today()}) {
+  if(!Number.isSafeInteger(amount)||amount<=0)throw new Error('Enter a recovery amount greater than £0.00.');
+  if(!selected?.length||new Set(selected).size!==selected.length||selected.some(c=>!categories.includes(c)))throw new Error('Choose at least one flexible category to adjust.');
+  const f=forecast(state,at);
+  if(f.shortfall)throw new Error(`${money(f.shortfall)} is missing for protected essentials and your buffer. A reset cannot reduce those costs.`);
+  const allocation=structuredClone(state.allocation);
+  allocation.startDate ||= weekStart(at);
+  if(!validDate(allocation.startDate)||!Array.isArray(allocation.amounts)||allocation.amounts.some(n=>!Number.isSafeInteger(n)||n<0))throw new Error('Save a valid income allocation before resetting future weeks.');
+  const future=allocation.amounts.map((value,index)=>({index,value,date:weeklyDate(allocation.startDate,index)})).filter(w=>w.date>at);
+  if(!future.length)throw new Error('There are no future weeks to adjust. Save a new income allocation first.');
+  const futureBudgets=structuredClone(state.futureBudgets||{});
+  const sourceBudgets=future.map(w=>({...state.budgets,...futureBudgets[w.date]}));
+  const capacities=future.map((w,i)=>Math.min(w.value,selected.reduce((sum,c)=>sum+(sourceBudgets[i][c]||0),0)));
+  const reductions=cappedShares(amount,capacities);
+  const rows=future.map((w,i)=>{
+    const categoryCuts=cappedShares(reductions[i],selected.map(c=>sourceBudgets[i][c]||0));
+    const budgets={...sourceBudgets[i]};selected.forEach((c,j)=>budgets[c]-=categoryCuts[j]);
+    futureBudgets[w.date]=budgets;allocation.amounts[w.index]=w.value-reductions[i];
+    return {...w,after:allocation.amounts[w.index],cuts:Object.fromEntries(selected.map((c,j)=>[c,categoryCuts[j]]))};
+  });
+  return {allocation,futureBudgets,rows,amount,selected:[...selected]};
 }
